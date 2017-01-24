@@ -47,7 +47,7 @@ class TextDataset(object):
         self.data = vectorizer.fit_transform(self.documents)
         self.vocab = vectorizer.get_feature_names()
         assert len(self.vocab) == self.data.shape[1]
-    
+
     def data_info(self, show_classes=False):
         N, M = self.data.shape
         sparsity = self.data.nnz / N / M * 100
@@ -56,7 +56,7 @@ class TextDataset(object):
             for i in range(len(self.class_names)):
                 num = sum(self.labels == i)
                 print('  {:5d} documents in class {:2d} ({})'.format(num, i, self.class_names[i]))
-        
+
     def show_document(self, i):
         label = self.labels[i]
         name = self.class_names[label]
@@ -75,7 +75,7 @@ class TextDataset(object):
         except AttributeError:
             pass
         return text
-    
+
     def keep_documents(self, idx):
         """Keep the documents given by the index, discard the others."""
         self.documents = [self.documents[i] for i in idx]
@@ -105,7 +105,7 @@ class TextDataset(object):
         idx = np.argwhere(wc >= nwords).squeeze()
         self.keep_documents(idx)
         return wc
-        
+
     def keep_top_words(self, M, Mprint=20):
         """Keep in the vocaluary the M words who appear most often."""
         freq = self.data.sum(axis=0)
@@ -117,13 +117,13 @@ class TextDataset(object):
         for i in range(Mprint):
             print('  {:3d}: {:10s} {:6d} counts'.format(i, self.vocab[i], freq[idx][i]))
         return freq[idx]
-    
+
     def normalize(self, norm='l1'):
         """Normalize data to unit length."""
         # TODO: TF-IDF.
         data = self.data.astype(np.float64)
         self.data = sklearn.preprocessing.normalize(data, axis=1, norm=norm)
-        
+
     def embed(self, filename=None, size=100):
         """Embed the vocabulary using pre-trained vectors."""
         if filename:
@@ -283,15 +283,15 @@ class model_perf(object):
         s.train_accuracy, s.train_f1, s.train_loss = {}, {}, {}
         s.test_accuracy, s.test_f1, s.test_loss = {}, {}, {}
 
-    def test(s, model, name, params, train_data, train_labels, val_data, val_labels, test_data, test_labels):
+    def test(s, model, name, params, train_data, train_labels, val_data, val_labels, test_data, test_labels,train_adj=None,val_adj=None,test_adj=None):
         s.params[name] = params
         s.fit_accuracies[name], s.fit_losses[name], s.fit_time[name] = \
-                model.fit(train_data, train_labels, val_data, val_labels)
+                model.fit(train_data, train_labels, val_data, val_labels,train_adj=train_adj,val_adj=val_adj)
         string, s.train_accuracy[name], s.train_f1[name], s.train_loss[name] = \
-                model.evaluate(train_data, train_labels)
+                model.evaluate(train_data, train_labels,adj=train_adj)
         print('train {}'.format(string))
         string, s.test_accuracy[name], s.test_f1[name], s.test_loss[name] = \
-                model.evaluate(test_data, test_labels)
+                model.evaluate(test_data, test_labels,adj=test_adj)
         print('test  {}'.format(string))
         s.names.add(name)
 

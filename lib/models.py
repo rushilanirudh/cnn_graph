@@ -15,13 +15,13 @@ import os, time, collections, shutil
 
 
 class base_model(object):
-    
+
     def __init__(self):
         self.regularizers = []
-    
+
     # High-level interface which runs the constructed computational graph.
-    
-    def predict(self, data, labels=None, sess=None):
+
+    def predict(self, data, labels=None, adj=None, sess=None):
         loss = 0
         size = data.shape[0]
         predictions = np.empty(size)
@@ -29,14 +29,14 @@ class base_model(object):
         for begin in range(0, size, self.batch_size):
             end = begin + self.batch_size
             end = min([end, size])
-            
+
             batch_data = np.zeros((self.batch_size, data.shape[1]))
             tmp_data = data[begin:end,:]
             if type(tmp_data) is not np.ndarray:
                 tmp_data = tmp_data.toarray()  # convert sparse matrices
             batch_data[:end-begin] = tmp_data
+            #feed_dict = {self.ph_data: batch_data, self.ph_dropout: 1,self.ph_adj: adj}
             feed_dict = {self.ph_data: batch_data, self.ph_dropout: 1}
-            
             # Compute loss if labels are given.
             if labels is not None:
                 batch_labels = np.zeros(self.batch_size)
@@ -46,15 +46,15 @@ class base_model(object):
                 loss += batch_loss
             else:
                 batch_pred = sess.run(self.op_prediction, feed_dict)
-            
+
             predictions[begin:end] = batch_pred[:end-begin]
-            
+
         if labels is not None:
             return predictions, loss * self.batch_size / size
         else:
             return predictions
-        
-    def evaluate(self, data, labels, sess=None):
+
+    def evaluate(self, data, labels, adj=None, sess=None):
         """
         Runs one evaluation against the full epoch of data.
         Return the precision and the number of correct predictions.
@@ -69,7 +69,7 @@ class base_model(object):
             N: number of signals (samples)
         """
         t_process, t_wall = time.process_time(), time.time()
-        predictions, loss = self.predict(data, labels, sess)
+        predictions, loss = self.predict(data, labels,adj,sess)
         #print(predictions)
         ncorrects = sum(predictions == labels)
         accuracy = 100 * sklearn.metrics.accuracy_score(labels, predictions)
@@ -80,11 +80,11 @@ class base_model(object):
             string += '\ntime: {:.0f}s (wall {:.0f}s)'.format(time.process_time()-t_process, time.time()-t_wall)
         return string, accuracy, f1, loss
 
-    def fit(self, train_data, train_labels, val_data, val_labels):
+    def fit(self, train_data, train_labels, val_data, val_labels,train_adj=None,val_adj=None):
         t_process, t_wall = time.process_time(), time.time()
         sess = tf.Session(graph=self.graph)
         shutil.rmtree(self._get_path('summaries'), ignore_errors=True)
-        writer = tf.train.SummaryWriter(self._get_path('summaries'), self.graph)
+        writer = tf.summary.FileWriter(self._get_path('summaries'), self.graph)
         shutil.rmtree(self._get_path('checkpoints'), ignore_errors=True)
         os.makedirs(self._get_path('checkpoints'))
         path = os.path.join(self._get_path('checkpoints'), 'model')
@@ -103,8 +103,14 @@ class base_model(object):
             idx = [indices.popleft() for i in range(self.batch_size)]
 
             batch_data, batch_labels = train_data[idx,:], train_labels[idx]
+            if train_adj is not None:
+                batch_adj = adjmats[idx,:,:]
+            else:
+                batch_adj = None
+
             if type(batch_data) is not np.ndarray:
                 batch_data = batch_data.toarray()  # convert sparse matrices
+            #feed_dict = {self.ph_data: batch_data, self.ph_labels: batch_labels, self.ph_dropout: self.dropout,self.adjmats : batch_adj}
             feed_dict = {self.ph_data: batch_data, self.ph_labels: batch_labels, self.ph_dropout: self.dropout}
             learning_rate, loss_average = sess.run([self.op_train, self.op_loss_average], feed_dict)
 
@@ -113,7 +119,7 @@ class base_model(object):
                 epoch = step * self.batch_size / train_data.shape[0]
                 print('step {} / {} (epoch {:.2f} / {}):'.format(step, num_steps, epoch, self.num_epochs))
                 print('  learning_rate = {:.2e}, loss_average = {:.2e}'.format(learning_rate, loss_average))
-                string, accuracy, f1, loss = self.evaluate(val_data, val_labels, sess)
+                string, accuracy, f1, loss = self.evaluate(val_data, val_labels,val_adj,sess)
                 accuracies.append(accuracy)
                 losses.append(loss)
                 print('  validation {}'.format(string))
@@ -126,14 +132,14 @@ class base_model(object):
                 summary.value.add(tag='validation/f1', simple_value=f1)
                 summary.value.add(tag='validation/loss', simple_value=loss)
                 writer.add_summary(summary, step)
-                
+
                 # Save model parameters (for evaluation).
                 self.op_saver.save(sess, path, global_step=step)
 
         print('validation accuracy: peak = {:.2f}, mean = {:.2f}'.format(max(accuracies), np.mean(accuracies[-10:])))
         writer.close()
         sess.close()
-        
+
         t_step = (time.time() - t_wall) / num_steps
         return accuracies, losses, t_step
 
@@ -145,8 +151,8 @@ class base_model(object):
         return val
 
     # Methods to construct the computational graph.
-    
-    def build_graph(self, M_0):
+
+    def build_graph(self,M_0):
         """Build the computational graph of the model."""
         self.graph = tf.Graph()
         with self.graph.as_default():
@@ -156,24 +162,25 @@ class base_model(object):
                 self.ph_data = tf.placeholder(tf.float32, (self.batch_size, M_0), 'data')
                 self.ph_labels = tf.placeholder(tf.int32, (self.batch_size), 'labels')
                 self.ph_dropout = tf.placeholder(tf.float32, (), 'dropout')
-
+                self.ph_adj = tf.placeholder(tf.float32,(self.batch_size,M_0,M_0),'adjmats')
             # Model.
-            op_logits = self.inference(self.ph_data, self.ph_dropout)
+            op_logits = self.inference(self.ph_data, self.ph_dropout,self.ph_adj)
+
             self.op_loss, self.op_loss_average = self.loss(op_logits, self.ph_labels, self.regularization)
             self.op_train = self.training(self.op_loss, self.learning_rate,
                     self.decay_steps, self.decay_rate, self.momentum)
             self.op_prediction = self.prediction(op_logits)
 
             # Initialize variables, i.e. weights and biases.
-            self.op_init = tf.initialize_all_variables()
-            
+            self.op_init = tf.global_variables_initializer()
+
             # Summaries for TensorBoard and Save for model parameters.
-            self.op_summary = tf.merge_all_summaries()
+            self.op_summary = tf.summary.merge_all()
             self.op_saver = tf.train.Saver(max_to_keep=5)
-        
+
         self.graph.finalize()
-    
-    def inference(self, data, dropout):
+
+    def inference(self, data, dropout,adjmats=None):
         """
         It builds the model, i.e. the computational graph, as far as
         is required for running the network forward to make predictions,
@@ -185,11 +192,14 @@ class base_model(object):
         training: we may want to discriminate the two, e.g. for dropout.
             True: the model is built for training.
             False: the model is built for evaluation.
+        L: size MxM
+            Graph Laplacian
+
         """
         # TODO: optimizations for sparse data
-        logits = self._inference(data, dropout)
+        logits = self._inference(data, dropout,adjmats)
         return logits
-    
+
     def probabilities(self, logits):
         """Return the probability of a sample to belong to each class."""
         with tf.name_scope('probabilities'):
@@ -212,21 +222,21 @@ class base_model(object):
             with tf.name_scope('regularization'):
                 regularization *= tf.add_n(self.regularizers)
             loss = cross_entropy + regularization
-            
+
             # Summaries for TensorBoard.
-            tf.scalar_summary('loss/cross_entropy', cross_entropy)
-            tf.scalar_summary('loss/regularization', regularization)
-            tf.scalar_summary('loss/total', loss)
+            tf.summary.scalar('loss/cross_entropy', cross_entropy)
+            tf.summary.scalar('loss/regularization', regularization)
+            tf.summary.scalar('loss/total', loss)
             with tf.name_scope('averages'):
                 averages = tf.train.ExponentialMovingAverage(0.9)
                 op_averages = averages.apply([cross_entropy, regularization, loss])
-                tf.scalar_summary('loss/avg/cross_entropy', averages.average(cross_entropy))
-                tf.scalar_summary('loss/avg/regularization', averages.average(regularization))
-                tf.scalar_summary('loss/avg/total', averages.average(loss))
+                tf.summary.scalar('loss/avg/cross_entropy', averages.average(cross_entropy))
+                tf.summary.scalar('loss/avg/regularization', averages.average(regularization))
+                tf.summary.scalar('loss/avg/total', averages.average(loss))
                 with tf.control_dependencies([op_averages]):
                     loss_average = tf.identity(averages.average(loss), name='control')
             return loss, loss_average
-    
+
     def training(self, loss, learning_rate, decay_steps, decay_rate=0.95, momentum=0.9):
         """Adds to the loss model the Ops required to generate and apply gradients."""
         with tf.name_scope('training'):
@@ -235,7 +245,7 @@ class base_model(object):
             if decay_rate != 1:
                 learning_rate = tf.train.exponential_decay(
                         learning_rate, global_step, decay_steps, decay_rate, staircase=True)
-            tf.scalar_summary('learning_rate', learning_rate)
+            tf.summary.scalar('learning_rate', learning_rate)
             # Optimizer.
             if momentum == 0:
                 optimizer = tf.train.GradientDescentOptimizer(learning_rate)
@@ -249,7 +259,7 @@ class base_model(object):
                 if grad is None:
                     print('warning: {} has no gradient'.format(var.op.name))
                 else:
-                    tf.histogram_summary(var.op.name + '/gradients', grad)
+                    tf.summary.histogram(var.op.name + '/gradients', grad)
             # The op return the learning rate.
             with tf.control_dependencies([op_gradients]):
                 op_train = tf.identity(learning_rate, name='control')
@@ -274,7 +284,7 @@ class base_model(object):
         var = tf.get_variable('weights', shape, tf.float32, initializer=initial)
         if regularization:
             self.regularizers.append(tf.nn.l2_loss(var))
-        tf.histogram_summary(var.op.name, var)
+        tf.summary.histogram(var.op.name, var)
         return var
 
     def _bias_variable(self, shape, regularization=True):
@@ -282,7 +292,7 @@ class base_model(object):
         var = tf.get_variable('bias', shape, tf.float32, initializer=initial)
         if regularization:
             self.regularizers.append(tf.nn.l2_loss(var))
-        tf.histogram_summary(var.op.name, var)
+        tf.summary.histogram(var.op.name, var)
         return var
 
     def _conv2d(self, x, W):
@@ -391,7 +401,45 @@ class fgcnn2(base_model):
         #self.L = L  # Graph Laplacian, NFEATURES x NFEATURES
         self.F = F  # Number of filters
         _, self.U = graph.fourier(L)
+
     def _inference(self, x, dropout):
+        # x: NSAMPLES x NFEATURES
+        with tf.name_scope('gconv1'):
+            # Transform to Fourier domain
+            U = tf.constant(self.U, dtype=tf.float32)
+            xf = tf.matmul(x, U)
+            xf = tf.expand_dims(xf, 1)  # NSAMPLES x 1 x NFEATURES
+            xf = tf.transpose(xf)  # NFEATURES x 1 x NSAMPLES
+            # Filter
+            W = self._weight_variable([NFEATURES, self.F, 1])
+            yf = tf.batch_matmul(W, xf)  # for each feature
+            yf = tf.transpose(yf)  # NSAMPLES x NFILTERS x NFEATURES
+            yf = tf.reshape(yf, [-1, NFEATURES])
+            # Transform back to graph domain
+            Ut = tf.transpose(U)
+            y = tf.matmul(yf, Ut)
+            y = tf.reshape(yf, [-1, self.F, NFEATURES])
+            # Bias and non-linearity
+            b = self._bias_variable([1, self.F, 1])
+#            b = self._bias_variable([1, self.F, NFEATURES])
+            y += b  # NSAMPLES x NFILTERS x NFEATURES
+            y = tf.nn.relu(y)
+        with tf.name_scope('fc1'):
+            W = self._weight_variable([self.F*NFEATURES, NCLASSES])
+            b = self._bias_variable([NCLASSES])
+            y = tf.reshape(y, [-1, self.F*NFEATURES])
+            y = tf.matmul(y, W) + b
+        return y
+
+class fgcnn_L(base_model):
+    """Graph CNN with full weights, i.e. patch has the same size as input."""
+    def __init__(self,F):
+        super().__init__()
+        #self.L = L  # Graph Laplacian, NFEATURES x NFEATURES
+        self.F = F  # Number of filters
+
+    def _inference(self, x, L, dropout):
+        _, self.U = graph.fourier(L)
         # x: NSAMPLES x NFEATURES
         with tf.name_scope('gconv1'):
             # Transform to Fourier domain
@@ -719,12 +767,12 @@ class cgcnn(base_model):
     They are lists, which length is equal to the number of fc layers.
         M: Number of features per sample, i.e. number of hidden neurons.
            The last layer is the softmax, i.e. M[-1] is the number of classes.
-    
+
     The following are choices of implementation for various blocks.
         filter: filtering operation, e.g. chebyshev5, lanczos2 etc.
         brelu: bias and relu, e.g. b1relu or b2relu.
         pool: pooling, e.g. mpool1.
-    
+
     Training parameters:
         num_epochs:    Number of training epochs.
         learning_rate: Initial learning rate.
@@ -746,49 +794,52 @@ class cgcnn(base_model):
                 regularization=0, dropout=0, batch_size=100, eval_frequency=200,
                 dir_name=''):
         super().__init__()
-        
+
         # Verify the consistency w.r.t. the number of layers.
         assert len(L) >= len(F) == len(K) == len(p)
         assert np.all(np.array(p) >= 1)
         p_log2 = np.where(np.array(p) > 1, np.log2(p), 0)
         assert np.all(np.mod(p_log2, 1) == 0)  # Powers of 2.
         assert len(L) >= 1 + np.sum(p_log2)  # Enough coarsening levels for pool sizes.
-        
+
         # Keep the useful Laplacians only. May be zero.
-        M_0 = L[0].shape[0]
+        #M_0 = L[0].shape[0]
+        M_0 = L[0].shape[1] #changing to accomodate 3D Tensors shape, 2D value should remain unchanged since its symmetrical
+
         j = 0
         self.L = []
         for pp in p:
             self.L.append(L[j])
             j += int(np.log2(pp)) if pp > 1 else 0
         L = self.L
-        
-        # Print information about NN architecture.
-        Ngconv = len(p)
-        Nfc = len(M)
-        print('NN architecture')
-        print('  input: M_0 = {}'.format(M_0))
-        for i in range(Ngconv):
-            print('  layer {0}: cgconv{0}'.format(i+1))
-            print('    representation: M_{0} * F_{1} / p_{1} = {2} * {3} / {4} = {5}'.format(
-                    i, i+1, L[i].shape[0], F[i], p[i], L[i].shape[0]*F[i]//p[i]))
-            F_last = F[i-1] if i > 0 else 1
-            print('    weights: F_{0} * F_{1} * K_{1} = {2} * {3} * {4} = {5}'.format(
-                    i, i+1, F_last, F[i], K[i], F_last*F[i]*K[i]))
-            if brelu == 'b1relu':
-                print('    biases: F_{} = {}'.format(i+1, F[i]))
-            elif brelu == 'b2relu':
-                print('    biases: M_{0} * F_{0} = {1} * {2} = {3}'.format(
-                        i+1, L[i].shape[0], F[i], L[i].shape[0]*F[i]))
-        for i in range(Nfc):
-            name = 'logits (softmax)' if i == Nfc-1 else 'fc{}'.format(i+1)
-            print('  layer {}: {}'.format(Ngconv+i+1, name))
-            print('    representation: M_{} = {}'.format(Ngconv+i+1, M[i]))
-            M_last = M[i-1] if i > 0 else M_0 if Ngconv == 0 else L[-1].shape[0] * F[-1] // p[-1]
-            print('    weights: M_{} * M_{} = {} * {} = {}'.format(
-                    Ngconv+i, Ngconv+i+1, M_last, M[i], M_last*M[i]))
-            print('    biases: M_{} = {}'.format(Ngconv+i+1, M[i]))
-        
+
+        # #Print information about NN architecture.
+        # Ngconv = len(p)
+        # Nfc = len(M)
+        # print('NN architecture')
+        # print('  input: M_0 = {}'.format(M_0))
+        # for i in range(Ngconv):
+        #     print('  layer {0}: cgconv{0}'.format(i+1))
+        #     print('    representation: M_{0} * F_{1} / p_{1} = {2} * {3} / {4} = {5}'.format(
+        #             i, i+1, L[i].shape[0], F[i], p[i], L[i].shape[0]*F[i]//p[i]))
+        #     F_last = F[i-1] if i > 0 else 1
+        #     print('    weights: F_{0} * F_{1} * K_{1} = {2} * {3} * {4} = {5}'.format(
+        #             i, i+1, F_last, F[i], K[i], F_last*F[i]*K[i]))
+        #     if brelu == 'b1relu':
+        #         print('    biases: F_{} = {}'.format(i+1, F[i]))
+        #     elif brelu == 'b2relu':
+        #         print('    biases: M_{0} * F_{0} = {1} * {2} = {3}'.format(
+        #                 i+1, L[i].shape[0], F[i], L[i].shape[0]*F[i]))
+        # for i in range(Nfc):
+        #     name = 'logits (softmax)' if i == Nfc-1 else 'fc{}'.format(i+1)
+        #     print('  layer {}: {}'.format(Ngconv+i+1, name))
+        #     print('    representation: M_{} = {}'.format(Ngconv+i+1, M[i]))
+        #     M_last = M[i-1] if i > 0 else M_0 if Ngconv == 0 else L[-1].shape[0] * F[-1] // p[-1]
+        #     print('    weights: M_{} * M_{} = {} * {} = {}'.format(
+        #             Ngconv+i, Ngconv+i+1, M_last, M[i], M_last*M[i]))
+        #     print('    biases: M_{} = {}'.format(Ngconv+i+1, M[i]))
+
+
         # Store attributes and bind operations.
         self.L, self.F, self.K, self.p, self.M = L, F, K, p, M
         self.num_epochs, self.learning_rate = num_epochs, learning_rate
@@ -799,10 +850,20 @@ class cgcnn(base_model):
         self.filter = getattr(self, filter)
         self.brelu = getattr(self, brelu)
         self.pool = getattr(self, pool)
-        
+
         # Build the computational graph.
         self.build_graph(M_0)
-        
+
+    def batch_fourier(self, x, L_tensor, Fout, K):
+        # TODO: Modify surrounding code to take 3D Ls as input
+        N = L_tensor.get_shape()[0]
+        _x = tf.identity(x)
+        for i in range(N):
+            _x[i,:,:] = self.fourier(x[i,:,:],L_tensor[i,:,:],Fout,K)
+
+        return _x
+
+
     def filter_in_fourier(self, x, L, Fout, K, U, W):
         # TODO: N x F x M would avoid the permutations
         N, M, Fin = x.get_shape()
@@ -819,6 +880,7 @@ class cgcnn(base_model):
         # Transform back to graph domain
         x = tf.matmul(x, U)  # N*Fout x M
         x = tf.reshape(x, [N, Fout, M])  # N x Fout x M
+
         return tf.transpose(x, perm=[0, 2, 1])  # N x M x Fout
 
     def fourier(self, x, L, Fout, K):
@@ -852,7 +914,7 @@ class cgcnn(base_model):
         """
         Filtering with Chebyshev interpolation
         Implementation: numpy.
-        
+
         Data: x of size N x M x F
             N: number of signals
             M: number of vertices
@@ -866,6 +928,7 @@ class cgcnn(base_model):
         # Transform to Chebyshev basis
         x = tf.transpose(x, perm=[1, 2, 0])  # M x Fin x N
         x = tf.reshape(x, [M, Fin*N])  # M x Fin*N
+
         def chebyshev(x):
             return graph.chebyshev(L, x, K)
         x = tf.py_func(chebyshev, [x], [tf.float32])[0]  # K x M x Fin*N
@@ -948,7 +1011,11 @@ class cgcnn(base_model):
         x = tf.matmul(x, W) + b
         return tf.nn.relu(x) if relu else x
 
-    def _inference(self, x, dropout):
+    def _inference(self, x, dropout,adjmats=None):
+        if False:
+            self.L = adjmats
+            print('adjmats is not None!', adjmats)
+
         # Graph convolutional layers.
         x = tf.expand_dims(x, 2)  # N x M x F=1
         for i in range(len(self.p)):
@@ -959,7 +1026,7 @@ class cgcnn(base_model):
                     x = self.brelu(x)
                 with tf.name_scope('pooling'):
                     x = self.pool(x, self.p[i])
-        
+
         # Fully connected hidden layers.
         N, M, F = x.get_shape()
         x = tf.reshape(x, [int(N), int(M*F)])  # N x M
@@ -967,7 +1034,7 @@ class cgcnn(base_model):
             with tf.variable_scope('fc{}'.format(i+1)):
                 x = self.fc(x, M)
                 x = tf.nn.dropout(x, dropout)
-        
+
         # Logits linear layer, i.e. softmax without normalization.
         with tf.variable_scope('logits'):
             x = self.fc(x, self.M[-1], relu=False)
