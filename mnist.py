@@ -71,18 +71,19 @@ del A
 # # Data
 
 # In[ ]:
-
+# TODO: How to pass adjacency matrices? TF does not allow lists and sparse matrices cannot be
+#       tiled in numpy
 from tensorflow.examples.tutorials.mnist import input_data
 mnist = input_data.read_data_sets(FLAGS.dir_data, one_hot=False)
 
 train_data = mnist.train.images.astype(np.float32)
-train_adj = [np.tile(l,(train_data.shape[0])) for l in L]
+train_adj = [np.tile(l,(train_data.shape[0],1,1)) for l in L]
 
 val_data = mnist.validation.images.astype(np.float32)
-val_adj = [np.tile(l,(val_data.shape[0])) for l in L]
+val_adj = [np.tile(l,(val_data.shape[0],1,1)) for l in L]
 
 test_data = mnist.test.images.astype(np.float32)
-test_adj = [np.tile(l,(test_data.shape[0])) for l in L]
+test_adj = [np.tile(l,(test_data.shape[0],1,1)) for l in L]
 
 train_labels = mnist.train.labels
 val_labels = mnist.validation.labels
@@ -178,11 +179,12 @@ if True:
     name = 'fgconv_softmax'
     params = common.copy()
     params['dir_name'] += name
-    params['filter'] = 'fourier'
+    params['filter'] = 'batch_fourier'
     params['K'] = [L[0].shape[0]]
-    model_perf.test(models.cgcnn(L, **params), name, params,
-                    train_data, train_labels, val_data, val_labels, test_data, test_labels)
-
+    # model_perf.test(models.cgcnn(L,**params), name, params,
+    #                 train_data, train_labels, val_data, val_labels, test_data,        test_labels,train_adj=train_adj,val_adj=val_adj,test_adj=test_adj)
+    model_perf.test(models.cgcnn(train_adj,**params), name, params,
+                    train_data, train_labels, val_data, val_labels, test_data, test_labels,train_adj=train_adj,val_adj=val_adj,test_adj=test_adj)
 
 # In[ ]:
 

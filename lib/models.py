@@ -35,8 +35,8 @@ class base_model(object):
             if type(tmp_data) is not np.ndarray:
                 tmp_data = tmp_data.toarray()  # convert sparse matrices
             batch_data[:end-begin] = tmp_data
-            #feed_dict = {self.ph_data: batch_data, self.ph_dropout: 1,self.ph_adj: adj}
-            feed_dict = {self.ph_data: batch_data, self.ph_dropout: 1}
+            feed_dict = {self.ph_data: batch_data, self.ph_dropout: 1,self.ph_adj: adj}
+            #feed_dict = {self.ph_data: batch_data, self.ph_dropout: 1}
             # Compute loss if labels are given.
             if labels is not None:
                 batch_labels = np.zeros(self.batch_size)
@@ -104,14 +104,14 @@ class base_model(object):
 
             batch_data, batch_labels = train_data[idx,:], train_labels[idx]
             if train_adj is not None:
-                batch_adj = adjmats[idx,:,:]
+                batch_adj = train_adj[idx,:,:]
             else:
                 batch_adj = None
 
             if type(batch_data) is not np.ndarray:
                 batch_data = batch_data.toarray()  # convert sparse matrices
-            #feed_dict = {self.ph_data: batch_data, self.ph_labels: batch_labels, self.ph_dropout: self.dropout,self.adjmats : batch_adj}
-            feed_dict = {self.ph_data: batch_data, self.ph_labels: batch_labels, self.ph_dropout: self.dropout}
+            feed_dict = {self.ph_data: batch_data, self.ph_labels: batch_labels, self.ph_dropout: self.dropout,self.ph_adj : batch_adj}
+            # feed_dict = {self.ph_data: batch_data, self.ph_labels: batch_labels, self.ph_dropout: self.dropout}
             learning_rate, loss_average = sess.run([self.op_train, self.op_loss_average], feed_dict)
 
             # Periodical evaluation of the model.
@@ -162,7 +162,7 @@ class base_model(object):
                 self.ph_data = tf.placeholder(tf.float32, (self.batch_size, M_0), 'data')
                 self.ph_labels = tf.placeholder(tf.int32, (self.batch_size), 'labels')
                 self.ph_dropout = tf.placeholder(tf.float32, (), 'dropout')
-                self.ph_adj = tf.placeholder(tf.float32,(self.batch_size,M_0,M_0),'adjmats')
+                self.ph_adj = tf.placeholder(tf.float32, shape=(self.batch_size,1,1),name='laplacians'),
             # Model.
             op_logits = self.inference(self.ph_data, self.ph_dropout,self.ph_adj)
 
@@ -282,6 +282,7 @@ class base_model(object):
     def _weight_variable(self, shape, regularization=True):
         initial = tf.truncated_normal_initializer(0, 0.1)
         var = tf.get_variable('weights', shape, tf.float32, initializer=initial)
+        tf.get_variable_scope().reuse_variables()
         if regularization:
             self.regularizers.append(tf.nn.l2_loss(var))
         tf.summary.histogram(var.op.name, var)
@@ -804,7 +805,7 @@ class cgcnn(base_model):
 
         # Keep the useful Laplacians only. May be zero.
         #M_0 = L[0].shape[0]
-        M_0 = L[0].shape[1] #changing to accomodate 3D Tensors shape, 2D value should remain unchanged since its symmetrical
+        M_0 = L[0][0,:,:][0,0].shape[0] #for 3D tensor input
 
         j = 0
         self.L = []
@@ -856,12 +857,18 @@ class cgcnn(base_model):
 
     def batch_fourier(self, x, L_tensor, Fout, K):
         # TODO: Modify surrounding code to take 3D Ls as input
-        N = L_tensor.get_shape()[0]
-        _x = tf.identity(x)
+        # TODO: Better Tensor Slicing, the input L to this function is messed up
+        N = L_tensor.get_shape().as_list()[0]
+        print(L_tensor[1,:,:])
+        s = x.get_shape().as_list()
+        _x = []
+        print('Batch Fourier')
         for i in range(N):
-            _x[i,:,:] = self.fourier(x[i,:,:],L_tensor[i,:,:],Fout,K)
+            print('Batch Fourier :',i)
+            _tmp = tf.reshape(x[i,:,:],[1,s[1],s[2]])
+            _x.append(self.fourier(_tmp,L_tensor[i,:,:][0,0],Fout,K))
 
-        return _x
+        return tf.pack(_x)
 
 
     def filter_in_fourier(self, x, L, Fout, K, U, W):
@@ -884,7 +891,7 @@ class cgcnn(base_model):
         return tf.transpose(x, perm=[0, 2, 1])  # N x M x Fout
 
     def fourier(self, x, L, Fout, K):
-        assert K == L.shape[0]  # artificial but useful to compute number of parameters
+        assert K == L.get_shape().as_list()  # artificial but useful to compute number of parameters
         N, M, Fin = x.get_shape()
         N, M, Fin = int(N), int(M), int(Fin)
         # Fourier basis
@@ -1012,11 +1019,8 @@ class cgcnn(base_model):
         return tf.nn.relu(x) if relu else x
 
     def _inference(self, x, dropout,adjmats=None):
-        if False:
-            self.L = adjmats
-            print('adjmats is not None!', adjmats)
-
         # Graph convolutional layers.
+        self.L = adjmats
         x = tf.expand_dims(x, 2)  # N x M x F=1
         for i in range(len(self.p)):
             with tf.variable_scope('conv{}'.format(i+1)):
