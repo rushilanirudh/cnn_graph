@@ -285,6 +285,7 @@ class model_perf(object):
 
     def test(s, model, name, params, train_data, train_labels, val_data, val_labels, test_data, test_labels,train_adj=None,val_adj=None,test_adj=None):
         s.params[name] = params
+        print('shape of adj data: ',train_adj.shape)
         s.fit_accuracies[name], s.fit_losses[name], s.fit_time[name] = \
                 model.fit(train_data, train_labels, val_data, val_labels,train_adj=train_adj,val_adj=val_adj)
         string, s.train_accuracy[name], s.train_f1[name], s.train_loss[name] = \

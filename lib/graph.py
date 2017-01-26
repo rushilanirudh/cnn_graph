@@ -5,7 +5,7 @@ import scipy.sparse
 import scipy.sparse.linalg
 import scipy.spatial.distance
 import numpy as np
-
+import tensorflow as tf
 
 def grid(m, dtype=np.float32):
     """Return the embedding of a grid graph."""
@@ -156,7 +156,9 @@ def fourier(L, algo='eigh', k=1):
         lamb, U = np.linalg.eig(L.toarray())
         lamb, U = sort(lamb, U)
     elif algo is 'eigh':
-        lamb, U = np.linalg.eigh(L.toarray())
+        #lamb, U = np.linalg.eigh(L.toarray())
+        lamb, U = tf.self_adjoint_eig(L)
+        U = tf.transpose(U,perm=[0,1])
     elif algo is 'eigs':
         lamb, U = scipy.sparse.linalg.eigs(L, k=k, which='SM')
         lamb, U = sort(lamb, U)

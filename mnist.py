@@ -183,8 +183,9 @@ if True:
     params['K'] = [L[0].shape[0]]
     # model_perf.test(models.cgcnn(L,**params), name, params,
     #                 train_data, train_labels, val_data, val_labels, test_data,        test_labels,train_adj=train_adj,val_adj=val_adj,test_adj=test_adj)
-    model_perf.test(models.cgcnn(train_adj,**params), name, params,
-                    train_data, train_labels, val_data, val_labels, test_data, test_labels,train_adj=train_adj,val_adj=val_adj,test_adj=test_adj)
+    model = models.cgcnn(train_adj,**params)
+    # model_perf.test(model, name, params,
+    #                 train_data, train_labels, val_data, val_labels, test_data, test_labels,train_adj=train_adj,val_adj=val_adj,test_adj=test_adj)
 
 # In[ ]:
 

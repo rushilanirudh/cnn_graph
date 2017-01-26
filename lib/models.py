@@ -81,6 +81,7 @@ class base_model(object):
         return string, accuracy, f1, loss
 
     def fit(self, train_data, train_labels, val_data, val_labels,train_adj=None,val_adj=None):
+        print('train_adj shape: ',train_adj.get_shape())
         t_process, t_wall = time.process_time(), time.time()
         sess = tf.Session(graph=self.graph)
         shutil.rmtree(self._get_path('summaries'), ignore_errors=True)
@@ -105,6 +106,7 @@ class base_model(object):
             batch_data, batch_labels = train_data[idx,:], train_labels[idx]
             if train_adj is not None:
                 batch_adj = train_adj[idx,:,:]
+                print('batch shape is: ',batch_adj.get_shape(),'total shape is: ',train_adj.get_shape())
             else:
                 batch_adj = None
 
@@ -162,7 +164,7 @@ class base_model(object):
                 self.ph_data = tf.placeholder(tf.float32, (self.batch_size, M_0), 'data')
                 self.ph_labels = tf.placeholder(tf.int32, (self.batch_size), 'labels')
                 self.ph_dropout = tf.placeholder(tf.float32, (), 'dropout')
-                self.ph_adj = tf.placeholder(tf.float32, shape=(self.batch_size,1,1),name='laplacians'),
+                self.ph_adj = tf.placeholder(tf.float32, shape=(self.batch_size,M_0,M_0),name='laplacians'),
             # Model.
             op_logits = self.inference(self.ph_data, self.ph_dropout,self.ph_adj)
 
@@ -804,8 +806,7 @@ class cgcnn(base_model):
         assert len(L) >= 1 + np.sum(p_log2)  # Enough coarsening levels for pool sizes.
 
         # Keep the useful Laplacians only. May be zero.
-        #M_0 = L[0].shape[0]
-        M_0 = L[0][0,:,:][0,0].shape[0] #for 3D tensor input
+        M_0 = L[0][0,:,:][0][0].shape[1]
 
         j = 0
         self.L = []
@@ -859,16 +860,14 @@ class cgcnn(base_model):
         # TODO: Modify surrounding code to take 3D Ls as input
         # TODO: Better Tensor Slicing, the input L to this function is messed up
         N = L_tensor.get_shape().as_list()[0]
-        print(L_tensor[1,:,:])
         s = x.get_shape().as_list()
         _x = []
-        print('Batch Fourier')
         for i in range(N):
             print('Batch Fourier :',i)
-            _tmp = tf.reshape(x[i,:,:],[1,s[1],s[2]])
-            _x.append(self.fourier(_tmp,L_tensor[i,:,:][0,0],Fout,K))
+            _tmp = tf.expand_dims(x[i,:,:],0)
+            _x.append(self.fourier(_tmp,L_tensor[i,:,:],Fout,K))
 
-        return tf.pack(_x)
+        return tf.squeeze(tf.pack(_x))
 
 
     def filter_in_fourier(self, x, L, Fout, K, U, W):
@@ -891,12 +890,12 @@ class cgcnn(base_model):
         return tf.transpose(x, perm=[0, 2, 1])  # N x M x Fout
 
     def fourier(self, x, L, Fout, K):
-        assert K == L.get_shape().as_list()  # artificial but useful to compute number of parameters
+        assert K == L.get_shape()[0]  # artificial but useful to compute number of parameters
         N, M, Fin = x.get_shape()
         N, M, Fin = int(N), int(M), int(Fin)
         # Fourier basis
         _, U = graph.fourier(L)
-        U = tf.constant(U.T, dtype=tf.float32)
+        #U = tf.constant(U.T, dtype=tf.float32)
         # Weights
         W = self._weight_variable([M, Fout, Fin], regularization=False)
         return self.filter_in_fourier(x, L, Fout, K, U, W)
@@ -1027,6 +1026,7 @@ class cgcnn(base_model):
                 with tf.name_scope('filter'):
                     x = self.filter(x, self.L[i], self.F[i], self.K[i])
                 with tf.name_scope('bias_relu'):
+                    print(x.get_shape())
                     x = self.brelu(x)
                 with tf.name_scope('pooling'):
                     x = self.pool(x, self.p[i])
