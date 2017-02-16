@@ -283,18 +283,17 @@ class model_perf(object):
         s.train_accuracy, s.train_f1, s.train_loss = {}, {}, {}
         s.test_accuracy, s.test_f1, s.test_loss = {}, {}, {}
 
-    def test(s, model, name, params, train_data, train_labels, val_data, val_labels, test_data, test_labels,train_adj=None,val_adj=None,test_adj=None):
+    def test(s, model, name, params, train_data, train_labels, val_data, val_labels, test_data, test_labels,train_lap=None,val_lap=None,test_lap=None):
         s.params[name] = params
-        print('shape of adj data: ',train_adj.shape)
         s.fit_accuracies[name], s.fit_losses[name], s.fit_time[name] = \
-                model.fit(train_data, train_labels, val_data, val_labels,train_adj=train_adj,val_adj=val_adj)
-        string, s.train_accuracy[name], s.train_f1[name], s.train_loss[name] = \
-                model.evaluate(train_data, train_labels,adj=train_adj)
-        print('train {}'.format(string))
-        string, s.test_accuracy[name], s.test_f1[name], s.test_loss[name] = \
-                model.evaluate(test_data, test_labels,adj=test_adj)
-        print('test  {}'.format(string))
-        s.names.add(name)
+                model.fit(train_data, train_labels, val_data, val_labels,train_lap=train_lap,val_lap=val_lap)
+        # string, s.train_accuracy[name], s.train_f1[name], s.train_loss[name] = \
+        #         model.evaluate(train_data, train_labels,lap=train_lap)
+        # print('train {}'.format(string))
+        # string, s.test_accuracy[name], s.test_f1[name], s.test_loss[name] = \
+        #         model.evaluate(test_data, test_labels,lap=test_lap)
+        # print('test  {}'.format(string))
+        # s.names.add(name)
 
     def show(s, fontsize=None):
         if fontsize:

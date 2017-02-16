@@ -2,11 +2,10 @@ from . import graph
 
 import tensorflow as tf
 import sklearn
-import scipy.sparse
+from scipy import sparse
 import numpy as np
 import os, time, collections, shutil
-
-
+import scipy.linalg as LA
 #NFEATURES = 28**2
 #NCLASSES = 10
 
@@ -21,7 +20,7 @@ class base_model(object):
 
     # High-level interface which runs the constructed computational graph.
 
-    def predict(self, data, labels=None, adj=None, sess=None):
+    def predict(self, data, labels=None, lap=None, sess=None):
         loss = 0
         size = data.shape[0]
         predictions = np.empty(size)
@@ -32,10 +31,17 @@ class base_model(object):
 
             batch_data = np.zeros((self.batch_size, data.shape[1]))
             tmp_data = data[begin:end,:]
-            if type(tmp_data) is not np.ndarray:
-                tmp_data = tmp_data.toarray()  # convert sparse matrices
+            # if type(tmp_data) is not np.ndarray:
+                # tmp_data = tmp_data.toarray()  # convert sparse matrices
             batch_data[:end-begin] = tmp_data
-            feed_dict = {self.ph_data: batch_data, self.ph_dropout: 1,self.ph_adj: adj}
+            batch_data = sparse.block_diag(batch_data)
+            batch_data = batch_data.todense()
+
+            batch_lap = sparse.kron(np.eye(self.batch_size),lap)
+            batch_lap = batch_lap.todense()
+
+            print('prediction sizes:',batch_lap.shape,batch_data.shape)
+            feed_dict = {self.ph_data: batch_data, self.ph_dropout: 1,self.ph_laplacian: batch_lap}
             #feed_dict = {self.ph_data: batch_data, self.ph_dropout: 1}
             # Compute loss if labels are given.
             if labels is not None:
@@ -54,7 +60,7 @@ class base_model(object):
         else:
             return predictions
 
-    def evaluate(self, data, labels, adj=None, sess=None):
+    def evaluate(self, data, labels, lap=None, sess=None):
         """
         Runs one evaluation against the full epoch of data.
         Return the precision and the number of correct predictions.
@@ -69,7 +75,7 @@ class base_model(object):
             N: number of signals (samples)
         """
         t_process, t_wall = time.process_time(), time.time()
-        predictions, loss = self.predict(data, labels,adj,sess)
+        predictions, loss = self.predict(data, labels,lap,sess)
         #print(predictions)
         ncorrects = sum(predictions == labels)
         accuracy = 100 * sklearn.metrics.accuracy_score(labels, predictions)
@@ -80,8 +86,7 @@ class base_model(object):
             string += '\ntime: {:.0f}s (wall {:.0f}s)'.format(time.process_time()-t_process, time.time()-t_wall)
         return string, accuracy, f1, loss
 
-    def fit(self, train_data, train_labels, val_data, val_labels,train_adj=None,val_adj=None):
-        print('train_adj shape: ',train_adj.get_shape())
+    def fit(self, train_data, train_labels, val_data, val_labels,train_lap=None,val_lap=None):
         t_process, t_wall = time.process_time(), time.time()
         sess = tf.Session(graph=self.graph)
         shutil.rmtree(self._get_path('summaries'), ignore_errors=True)
@@ -97,22 +102,26 @@ class base_model(object):
         indices = collections.deque()
         num_steps = int(self.num_epochs * train_data.shape[0] / self.batch_size)
         for step in range(1, num_steps+1):
-
+            print('batch #',step)
             # Be sure to have used all the samples before using one a second time.
             if len(indices) < self.batch_size:
                 indices.extend(np.random.permutation(train_data.shape[0]))
             idx = [indices.popleft() for i in range(self.batch_size)]
 
             batch_data, batch_labels = train_data[idx,:], train_labels[idx]
-            if train_adj is not None:
-                batch_adj = train_adj[idx,:,:]
-                print('batch shape is: ',batch_adj.get_shape(),'total shape is: ',train_adj.get_shape())
-            else:
-                batch_adj = None
+            batch_data = sparse.block_diag(batch_data)
+            batch_data = batch_data.todense()
 
-            if type(batch_data) is not np.ndarray:
-                batch_data = batch_data.toarray()  # convert sparse matrices
-            feed_dict = {self.ph_data: batch_data, self.ph_labels: batch_labels, self.ph_dropout: self.dropout,self.ph_adj : batch_adj}
+            if train_lap is not None:
+                batch_lap = sparse.kron(np.eye(self.batch_size),train_lap)
+                batch_lap = batch_lap.todense()
+            else:
+                batch_lap = None
+
+            # if type(batch_data) is not np.ndarray:
+                # batch_data = batch_data.toarray()  # convert sparse matrices
+
+            feed_dict = {self.ph_data: batch_data, self.ph_labels: batch_labels, self.ph_dropout: self.dropout,self.ph_laplacian : batch_lap}
             # feed_dict = {self.ph_data: batch_data, self.ph_labels: batch_labels, self.ph_dropout: self.dropout}
             learning_rate, loss_average = sess.run([self.op_train, self.op_loss_average], feed_dict)
 
@@ -121,7 +130,7 @@ class base_model(object):
                 epoch = step * self.batch_size / train_data.shape[0]
                 print('step {} / {} (epoch {:.2f} / {}):'.format(step, num_steps, epoch, self.num_epochs))
                 print('  learning_rate = {:.2e}, loss_average = {:.2e}'.format(learning_rate, loss_average))
-                string, accuracy, f1, loss = self.evaluate(val_data, val_labels,val_adj,sess)
+                string, accuracy, f1, loss = self.evaluate(val_data[:10,:], val_labels[:10],val_lap,sess)
                 accuracies.append(accuracy)
                 losses.append(loss)
                 print('  validation {}'.format(string))
@@ -161,12 +170,14 @@ class base_model(object):
 
             # Inputs.
             with tf.name_scope('inputs'):
-                self.ph_data = tf.placeholder(tf.float32, (self.batch_size, M_0), 'data')
+                self.ph_data = tf.placeholder(tf.float32, shape=(self.batch_size, self.batch_size*M_0))
                 self.ph_labels = tf.placeholder(tf.int32, (self.batch_size), 'labels')
                 self.ph_dropout = tf.placeholder(tf.float32, (), 'dropout')
-                self.ph_adj = tf.placeholder(tf.float32, shape=(self.batch_size,M_0,M_0),name='laplacians'),
+                self.ph_laplacian = tf.placeholder(tf.float32,shape=(self.batch_size*M_0,self.batch_size*M_0))
+                # self.ph_laplacian = np.empty(self.batch_size,M_0,M_0)
+
             # Model.
-            op_logits = self.inference(self.ph_data, self.ph_dropout,self.ph_adj)
+            op_logits = self.inference(self.ph_data, self.ph_dropout,self.ph_laplacian)
 
             self.op_loss, self.op_loss_average = self.loss(op_logits, self.ph_labels, self.regularization)
             self.op_train = self.training(self.op_loss, self.learning_rate,
@@ -182,7 +193,7 @@ class base_model(object):
 
         self.graph.finalize()
 
-    def inference(self, data, dropout,adjmats=None):
+    def inference(self, data, dropout,laplacians=None):
         """
         It builds the model, i.e. the computational graph, as far as
         is required for running the network forward to make predictions,
@@ -194,12 +205,12 @@ class base_model(object):
         training: we may want to discriminate the two, e.g. for dropout.
             True: the model is built for training.
             False: the model is built for evaluation.
-        L: size MxM
-            Graph Laplacian
+        L: size N*MxN*M
+            Batch Graph Laplacian, as a block diagonal matrix
 
         """
         # TODO: optimizations for sparse data
-        logits = self._inference(data, dropout,adjmats)
+        logits = self._inference(data, dropout,laplacians)
         return logits
 
     def probabilities(self, logits):
@@ -284,7 +295,6 @@ class base_model(object):
     def _weight_variable(self, shape, regularization=True):
         initial = tf.truncated_normal_initializer(0, 0.1)
         var = tf.get_variable('weights', shape, tf.float32, initializer=initial)
-        tf.get_variable_scope().reuse_variables()
         if regularization:
             self.regularizers.append(tf.nn.l2_loss(var))
         tf.summary.histogram(var.op.name, var)
@@ -806,7 +816,7 @@ class cgcnn(base_model):
         assert len(L) >= 1 + np.sum(p_log2)  # Enough coarsening levels for pool sizes.
 
         # Keep the useful Laplacians only. May be zero.
-        M_0 = L[0][0,:,:][0][0].shape[1]
+        M_0 = L[0].shape[1]
 
         j = 0
         self.L = []
@@ -815,31 +825,31 @@ class cgcnn(base_model):
             j += int(np.log2(pp)) if pp > 1 else 0
         L = self.L
 
-        # #Print information about NN architecture.
-        # Ngconv = len(p)
-        # Nfc = len(M)
-        # print('NN architecture')
-        # print('  input: M_0 = {}'.format(M_0))
-        # for i in range(Ngconv):
-        #     print('  layer {0}: cgconv{0}'.format(i+1))
-        #     print('    representation: M_{0} * F_{1} / p_{1} = {2} * {3} / {4} = {5}'.format(
-        #             i, i+1, L[i].shape[0], F[i], p[i], L[i].shape[0]*F[i]//p[i]))
-        #     F_last = F[i-1] if i > 0 else 1
-        #     print('    weights: F_{0} * F_{1} * K_{1} = {2} * {3} * {4} = {5}'.format(
-        #             i, i+1, F_last, F[i], K[i], F_last*F[i]*K[i]))
-        #     if brelu == 'b1relu':
-        #         print('    biases: F_{} = {}'.format(i+1, F[i]))
-        #     elif brelu == 'b2relu':
-        #         print('    biases: M_{0} * F_{0} = {1} * {2} = {3}'.format(
-        #                 i+1, L[i].shape[0], F[i], L[i].shape[0]*F[i]))
-        # for i in range(Nfc):
-        #     name = 'logits (softmax)' if i == Nfc-1 else 'fc{}'.format(i+1)
-        #     print('  layer {}: {}'.format(Ngconv+i+1, name))
-        #     print('    representation: M_{} = {}'.format(Ngconv+i+1, M[i]))
-        #     M_last = M[i-1] if i > 0 else M_0 if Ngconv == 0 else L[-1].shape[0] * F[-1] // p[-1]
-        #     print('    weights: M_{} * M_{} = {} * {} = {}'.format(
-        #             Ngconv+i, Ngconv+i+1, M_last, M[i], M_last*M[i]))
-        #     print('    biases: M_{} = {}'.format(Ngconv+i+1, M[i]))
+        #Print information about NN architecture.
+        Ngconv = len(p)
+        Nfc = len(M)
+        print('NN architecture')
+        print('  input: M_0 = {}'.format(M_0))
+        for i in range(Ngconv):
+            print('  layer {0}: cgconv{0}'.format(i+1))
+            print('    representation: M_{0} * F_{1} / p_{1} = {2} * {3} / {4} = {5}'.format(
+                    i, i+1, L[i].shape[0], F[i], p[i], L[i].shape[0]*F[i]//p[i]))
+            F_last = F[i-1] if i > 0 else 1
+            print('    weights: F_{0} * F_{1} * K_{1} = {2} * {3} * {4} = {5}'.format(
+                    i, i+1, F_last, F[i], K[i], F_last*F[i]*K[i]))
+            if brelu == 'b1relu':
+                print('    biases: F_{} = {}'.format(i+1, F[i]))
+            elif brelu == 'b2relu':
+                print('    biases: M_{0} * F_{0} = {1} * {2} = {3}'.format(
+                        i+1, L[i].shape[0], F[i], L[i].shape[0]*F[i]))
+        for i in range(Nfc):
+            name = 'logits (softmax)' if i == Nfc-1 else 'fc{}'.format(i+1)
+            print('  layer {}: {}'.format(Ngconv+i+1, name))
+            print('    representation: M_{} = {}'.format(Ngconv+i+1, M[i]))
+            M_last = M[i-1] if i > 0 else M_0 if Ngconv == 0 else L[-1].shape[0] * F[-1] // p[-1]
+            print('    weights: M_{} * M_{} = {} * {} = {}'.format(
+                    Ngconv+i, Ngconv+i+1, M_last, M[i], M_last*M[i]))
+            print('    biases: M_{} = {}'.format(Ngconv+i+1, M[i]))
 
 
         # Store attributes and bind operations.
@@ -890,6 +900,7 @@ class cgcnn(base_model):
         return tf.transpose(x, perm=[0, 2, 1])  # N x M x Fout
 
     def fourier(self, x, L, Fout, K):
+        print('fourier filtering')
         assert K == L.get_shape()[0]  # artificial but useful to compute number of parameters
         N, M, Fin = x.get_shape()
         N, M, Fin = int(N), int(M), int(Fin)
@@ -981,6 +992,7 @@ class cgcnn(base_model):
     def b1relu(self, x):
         """Bias and ReLU. One bias per filter."""
         N, M, F = x.get_shape()
+
         b = self._bias_variable([1, 1, int(F)], regularization=False)
         return tf.nn.relu(x + b)
 
@@ -1017,16 +1029,18 @@ class cgcnn(base_model):
         x = tf.matmul(x, W) + b
         return tf.nn.relu(x) if relu else x
 
-    def _inference(self, x, dropout,adjmats=None):
+    def _inference(self, x, dropout,laplacians=None):
         # Graph convolutional layers.
-        self.L = adjmats
+        # self.L = laplacians
+        print(type(laplacians))
         x = tf.expand_dims(x, 2)  # N x M x F=1
         for i in range(len(self.p)):
+            print('Inference')
+
             with tf.variable_scope('conv{}'.format(i+1)):
                 with tf.name_scope('filter'):
-                    x = self.filter(x, self.L[i], self.F[i], self.K[i])
+                    x = self.filter(x, laplacians, self.F[i], self.K[i])
                 with tf.name_scope('bias_relu'):
-                    print(x.get_shape())
                     x = self.brelu(x)
                 with tf.name_scope('pooling'):
                     x = self.pool(x, self.p[i])

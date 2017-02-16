@@ -14,6 +14,7 @@ import tensorflow as tf
 import numpy as np
 import time
 import matplotlib.pyplot as plt
+from scipy import sparse
 
 #get_ipython().magic(u'matplotlib inline')
 
@@ -58,6 +59,8 @@ def grid_graph(m, corners=False):
 t_start = time.process_time()
 A = grid_graph(28, corners=False)
 A = graph.replace_random_edges(A, 0)
+N = 100
+A = A.tocsr()[:N,:N]
 
 graphs, perm = coarsening.coarsen(A, levels=FLAGS.coarsening_levels, self_connections=False)
 L = [graph.laplacian(A, normalized=True) for A in graphs]
@@ -77,25 +80,37 @@ from tensorflow.examples.tutorials.mnist import input_data
 mnist = input_data.read_data_sets(FLAGS.dir_data, one_hot=False)
 
 train_data = mnist.train.images.astype(np.float32)
-train_adj = [np.tile(l,(train_data.shape[0],1,1)) for l in L]
+# train_lap = [ sparse.kron(np.eye(train_data.shape[0]),l) for l in L]
+train_lap = L
 
 val_data = mnist.validation.images.astype(np.float32)
-val_adj = [np.tile(l,(val_data.shape[0],1,1)) for l in L]
+# val_lap = [ sparse.kron(np.eye(val_data.shape[0]),l) for l in L]
+val_lap = L
 
 test_data = mnist.test.images.astype(np.float32)
-test_adj = [np.tile(l,(test_data.shape[0],1,1)) for l in L]
+# test_lap = [ sparse.kron(np.eye(test_data.shape[0]),l) for l in L]
+test_lap = L
 
 train_labels = mnist.train.labels
 val_labels = mnist.validation.labels
 test_labels = mnist.test.labels
 
 t_start = time.process_time()
+
+
+train_data = train_data[:,:N]
+val_data = val_data[:,:N]
+test_data = test_data[:,:N]
+
 train_data = coarsening.perm_data(train_data, perm)
 val_data = coarsening.perm_data(val_data, perm)
 test_data = coarsening.perm_data(test_data, perm)
+
+
+
+
 print('Execution time: {:.2f}s'.format(time.process_time() - t_start))
 del perm
-
 
 # # Neural networks
 
@@ -179,13 +194,14 @@ if True:
     name = 'fgconv_softmax'
     params = common.copy()
     params['dir_name'] += name
-    params['filter'] = 'batch_fourier'
-    params['K'] = [L[0].shape[0]]
-    # model_perf.test(models.cgcnn(L,**params), name, params,
-    #                 train_data, train_labels, val_data, val_labels, test_data,        test_labels,train_adj=train_adj,val_adj=val_adj,test_adj=test_adj)
-    model = models.cgcnn(train_adj,**params)
-    # model_perf.test(model, name, params,
-    #                 train_data, train_labels, val_data, val_labels, test_data, test_labels,train_adj=train_adj,val_adj=val_adj,test_adj=test_adj)
+    params['filter'] = 'fourier'
+    params['batch_size'] = 10
+    params['eval_frequency'] = 50
+    params['K'] = [L[0].shape[0]*params['batch_size']]
+
+    model = models.cgcnn(train_lap,**params)
+    model_perf.test(model, name, params,
+                    train_data, train_labels, val_data, val_labels, test_data, test_labels,train_lap=train_lap[0],val_lap=val_lap[0],test_lap=test_lap[0])
 
 # In[ ]:
 
